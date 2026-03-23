@@ -5,5 +5,5 @@ import react from '@vitejs/plugin-react'
 // where the app is served from a subdirectory, not a domain root.
 export default defineConfig({
   plugins: [react()],
-  base: './',
+  base: '/Observability/',
 })
