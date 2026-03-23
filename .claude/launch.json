@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
+      "port": 5173
+    },
+    {
+      "name": "ingestion-service",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd services/ingestion && pip install -q -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8001 --reload"],
+      "port": 8001
+    },
+    {
+      "name": "processing-service",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd services/processing && pip install -q -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8002 --reload"],
+      "port": 8002
+    },
+    {
+      "name": "alerts-service",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd services/alerts && pip install -q -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8003 --reload"],
+      "port": 8003
+    }
+  ]
+}
