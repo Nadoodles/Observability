@@ -1,0 +1,137 @@
+# ─── Distributed Microservices Observability Platform ─────────────────────────
+# Local development stack: 3 FastAPI microservices + Redis + PostgreSQL
+#
+# Service ports:
+#   ingestion:  8001  — ad event intake + built-in traffic simulator
+#   processing: 8002  — Redis subscriber + 30s metric aggregation windows
+#   alerts:     8003  — SLA poller + dashboard API (primary frontend target)
+#   redis:      6379
+#   postgres:   5432
+#
+# Usage:
+#   docker compose up --build          # start everything
+#   docker compose up --build -d       # detached
+#   docker compose logs -f alerts      # tail a single service
+#   docker compose down -v             # tear down + delete volumes
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Message broker ────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"  # 6379 in use by local Redis; services connect via internal DNS (redis:6379)
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Time-series store ─────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: observability
+      POSTGRES_USER: obs_user
+      POSTGRES_PASSWORD: obs_pass
+    ports:
+      - "5434:5432"  # host ports 5432/5433 in use; services connect via internal DNS (postgres:5432)
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U obs_user -d observability"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Service 1: Data Ingestion ─────────────────────────────────────────────
+  # Accepts ad click events via REST and publishes them to Redis pub/sub.
+  # Runs a built-in traffic simulator at SIMULATOR_RATE events/sec so the
+  # platform is self-driving — no external load generator needed for demos.
+  ingestion:
+    build:
+      context: ./services/ingestion
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      REDIS_URL: redis://redis:6379
+      REDIS_CHANNEL: ad_events
+      SIMULATOR_RATE: "20"   # events per second
+      SIMULATE: "true"
+      PORT: "8001"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── Service 2: Metrics Processing ─────────────────────────────────────────
+  # Subscribes to Redis, buffers events in memory, aggregates them into
+  # 30-second windows (avg/p95/p99 latency, error rate, throughput),
+  # and flushes to PostgreSQL.
+  processing:
+    build:
+      context: ./services/processing
+      dockerfile: Dockerfile
+    ports:
+      - "8012:8002"  # 8002 in use by project_nexus; internal traffic still uses processing:8002
+    environment:
+      REDIS_URL: redis://redis:6379
+      REDIS_CHANNEL: ad_events
+      DATABASE_URL: postgresql://obs_user:obs_pass@postgres:5432/observability
+      FLUSH_INTERVAL: "30"   # seconds per aggregation window
+      PORT: "8002"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8002/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── Service 3: Alert Service ──────────────────────────────────────────────
+  # Polls PostgreSQL every POLL_INTERVAL seconds, evaluates SLA thresholds,
+  # manages alert lifecycle (create / auto-resolve), and serves the metrics
+  # summary API that the React dashboard polls.
+  alerts:
+    build:
+      context: ./services/alerts
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      DATABASE_URL: postgresql://obs_user:obs_pass@postgres:5432/observability
+      POLL_INTERVAL: "30"
+      LATENCY_WARN_MS: "150"
+      LATENCY_CRIT_MS: "300"
+      ERROR_RATE_WARN: "0.005"   # 0.5%
+      ERROR_RATE_CRIT: "0.02"    # 2.0%
+      PORT: "8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8003/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
